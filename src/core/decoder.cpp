@@ -8,6 +8,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/dict.h>
 #include <libavutil/display.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
@@ -475,9 +476,17 @@ class VideoDecoder::Impl {
             || options.target_analysis_area_px.has_value()} {
     const auto encoded_path = utf8Path(path);
     AVFormatContext* opened_format = nullptr;
+    // This decoder only ever reads one local file. Without a whitelist, a
+    // crafted input such as an HLS playlist, or a protocol prefix in place of
+    // a path, can make FFmpeg open network URLs or other files.
+    AVDictionary* open_options = nullptr;
     checkAv(
-        avformat_open_input(&opened_format, encoded_path.c_str(), nullptr, nullptr),
-        "Cannot open video " + encoded_path);
+        av_dict_set(&open_options, "protocol_whitelist", "file", 0),
+        "Cannot restrict video input protocols");
+    const int open_result = avformat_open_input(
+        &opened_format, encoded_path.c_str(), nullptr, &open_options);
+    av_dict_free(&open_options);
+    checkAv(open_result, "Cannot open video " + encoded_path);
     format_ = opened_format;
     try {
       checkAv(avformat_find_stream_info(format_, nullptr), "Cannot read stream information");
@@ -486,6 +495,13 @@ class VideoDecoder::Impl {
       checkAv(stream_index, "Cannot find a video stream");
       stream_index_ = stream_index;
       stream_ = format_->streams[stream_index_];
+      // Only the selected video stream is ever decoded, so tell the demuxer
+      // to drop audio, subtitle, and other streams.
+      for (unsigned int index = 0; index < format_->nb_streams; ++index) {
+        if (static_cast<int>(index) != stream_index_) {
+          format_->streams[index]->discard = AVDISCARD_ALL;
+        }
+      }
 
       const AVCodec* codec = avcodec_find_decoder(stream_->codecpar->codec_id);
       if (codec == nullptr) {

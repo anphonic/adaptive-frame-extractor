@@ -8,6 +8,10 @@
 
 #include <opencv2/imgproc.hpp>
 
+extern "C" {
+#include <libavformat/avformat.h>
+}
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -335,6 +339,23 @@ TEST_CASE("automatic analysis preserves native planar high-bit-depth luma") {
   REQUIRE(analysis_frames.size() == 3U);
   CHECK(cv::norm(analysis_frames[0], analysis_frames[1], cv::NORM_INF) <= 1.0);
   CHECK(cv::norm(analysis_frames[0], analysis_frames[2], cv::NORM_INF) <= 1.0);
+}
+
+TEST_CASE("decoder opens only plain local files") {
+  const MaterializedFixture fixture{"cfr_h264.mp4"};
+  const std::string prefixed = "concat:" + fixture.path().string();
+
+  // Control: this FFmpeg build can open the file through the concat protocol
+  // when nothing restricts it, so a refusal below comes from the whitelist.
+  AVFormatContext* unrestricted = nullptr;
+  REQUIRE(avformat_open_input(&unrestricted, prefixed.c_str(), nullptr, nullptr) == 0);
+  avformat_close_input(&unrestricted);
+
+  CHECK_THROWS_AS(
+      (fe::VideoDecoder{std::filesystem::path{prefixed}}), std::runtime_error);
+
+  fe::VideoDecoder decoder{fixture.path()};
+  CHECK(decoder.read().has_value());
 }
 
 TEST_CASE("decoder can defer color conversion without adaptive analysis") {
