@@ -55,14 +55,17 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcpkg_cache.outputs.toolchain_key }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcpkg_cache.outputs.toolchain_key }}-
-      - name: Fetch the pinned vcpkg baseline
-        # The runner image's vcpkg checkout can be older than the baseline in
-        # vcpkg.json, and vcpkg does not fetch a missing baseline commit itself.
+      - name: Update vcpkg to the pinned baseline when the runner's copy is older
+        # The runner image ships a vcpkg checkout that can be weeks older than
+        # the baseline in vcpkg.json. vcpkg resolves versions from its own
+        # checkout, so an older one cannot install a newer baseline.
         run: |
           baseline=$(sed -n 's/.*"builtin-baseline": *"\([0-9a-f]\{40\}\)".*/\1/p' vcpkg.json)
           test -n "$baseline"
-          if ! git -C "$VCPKG_INSTALLATION_ROOT" cat-file -e "${baseline}^{commit}" 2>/dev/null; then
+          if ! git -C "$VCPKG_INSTALLATION_ROOT" merge-base --is-ancestor "$baseline" HEAD 2>/dev/null; then
             git -C "$VCPKG_INSTALLATION_ROOT" fetch --quiet origin "$baseline"
+            git -C "$VCPKG_INSTALLATION_ROOT" checkout --quiet --detach "$baseline"
+            "$VCPKG_INSTALLATION_ROOT/bootstrap-vcpkg.sh" -disableMetrics
           fi
       - name: Install vcpkg dependencies
         env:
