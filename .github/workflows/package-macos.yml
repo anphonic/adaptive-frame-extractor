@@ -134,7 +134,9 @@ jobs:
           test -n "$baseline"
           if ! git -C "$VCPKG_INSTALLATION_ROOT" merge-base --is-ancestor "$baseline" HEAD 2>/dev/null; then
             git -C "$VCPKG_INSTALLATION_ROOT" fetch --quiet origin "$baseline"
-            git -C "$VCPKG_INSTALLATION_ROOT" checkout --quiet --detach "$baseline"
+            # The image's checkout can differ from its own HEAD; this is a
+            # throwaway runner, so discard those differences.
+            git -C "$VCPKG_INSTALLATION_ROOT" checkout --quiet --force --detach "$baseline"
             "$VCPKG_INSTALLATION_ROOT/bootstrap-vcpkg.sh" -disableMetrics
           fi
       - name: Install vcpkg dependencies

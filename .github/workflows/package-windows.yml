@@ -54,7 +54,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             git -C $env:VCPKG_INSTALLATION_ROOT fetch --quiet origin $baseline
             if ($LASTEXITCODE -ne 0) { throw "Cannot fetch vcpkg baseline $baseline" }
-            git -C $env:VCPKG_INSTALLATION_ROOT checkout --quiet --detach $baseline
+            # The image's checkout can differ from its own HEAD; this is a
+            # throwaway runner, so discard those differences.
+            git -C $env:VCPKG_INSTALLATION_ROOT checkout --quiet --force --detach $baseline
             if ($LASTEXITCODE -ne 0) { throw "Cannot check out vcpkg baseline $baseline" }
             & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
             if ($LASTEXITCODE -ne 0) { throw "Cannot bootstrap vcpkg" }
