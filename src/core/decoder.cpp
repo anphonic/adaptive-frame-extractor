@@ -412,8 +412,10 @@ std::function<cv::Mat()> fullBgr16Renderer(
     std::shared_ptr<AVFrame> frame,
     int rotation_degrees) {
   return [frame = std::move(frame), rotation_degrees] {
+    // The retained frame may still be in GPU memory; see softwareFrame().
     return applyDisplayRotation(
-        convertToBgr16Once(*frame, SWS_BILINEAR), rotation_degrees);
+        convertToBgr16Once(*softwareFrame(frame), SWS_BILINEAR),
+        rotation_degrees);
   };
 }
 
