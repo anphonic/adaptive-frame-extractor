@@ -421,7 +421,6 @@ std::function<cv::Mat()> fullBgr16Renderer(
             *softwareFrame(frame),
             SWS_BILINEAR | SWS_ACCURATE_RND | SWS_BITEXACT),
         rotation_degrees);
-        rotation_degrees);
   };
 }
 
