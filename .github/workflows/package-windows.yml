@@ -42,6 +42,26 @@ jobs:
             vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcpkg_cache.outputs.toolchain_key }}-${{ hashFiles('vcpkg.json', 'cmake/triplets/*.cmake') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ steps.vcpkg_cache.outputs.toolchain_key }}-
+      - name: Update vcpkg to the pinned baseline when the runner's copy is older
+        # The runner image ships a vcpkg checkout that can be weeks older than
+        # the baseline in vcpkg.json. vcpkg resolves versions from its own
+        # checkout, so an older one cannot install a newer baseline.
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          if (-not $baseline) { throw "vcpkg.json has no builtin-baseline" }
+          git -C $env:VCPKG_INSTALLATION_ROOT merge-base --is-ancestor $baseline HEAD 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            git -C $env:VCPKG_INSTALLATION_ROOT fetch --quiet origin $baseline
+            if ($LASTEXITCODE -ne 0) { throw "Cannot fetch vcpkg baseline $baseline" }
+            # The image's checkout can differ from its own HEAD; this is a
+            # throwaway runner, so discard those differences.
+            git -C $env:VCPKG_INSTALLATION_ROOT checkout --quiet --force --detach $baseline
+            if ($LASTEXITCODE -ne 0) { throw "Cannot check out vcpkg baseline $baseline" }
+            & "$env:VCPKG_INSTALLATION_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE -ne 0) { throw "Cannot bootstrap vcpkg" }
+          }
+          $global:LASTEXITCODE = 0
       - name: Install vcpkg dependencies
         shell: pwsh
         run: >-
