@@ -125,6 +125,20 @@ jobs:
           security list-keychains -d user -s "$keychain_path"
           echo "identity=$MACOS_CODESIGN_IDENTITY" >> "$GITHUB_OUTPUT"
 
+      - name: Update vcpkg to the pinned baseline when the runner's copy is older
+        # The runner image ships a vcpkg checkout that can be weeks older than
+        # the baseline in vcpkg.json. vcpkg resolves versions from its own
+        # checkout, so an older one cannot install a newer baseline.
+        run: |
+          baseline=$(sed -n 's/.*"builtin-baseline": *"\([0-9a-f]\{40\}\)".*/\1/p' vcpkg.json)
+          test -n "$baseline"
+          if ! git -C "$VCPKG_INSTALLATION_ROOT" merge-base --is-ancestor "$baseline" HEAD 2>/dev/null; then
+            git -C "$VCPKG_INSTALLATION_ROOT" fetch --quiet origin "$baseline"
+            # The image's checkout can differ from its own HEAD; this is a
+            # throwaway runner, so discard those differences.
+            git -C "$VCPKG_INSTALLATION_ROOT" checkout --quiet --force --detach "$baseline"
+            "$VCPKG_INSTALLATION_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          fi
       - name: Install vcpkg dependencies
         env:
           VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/vcpkg-archives,readwrite"

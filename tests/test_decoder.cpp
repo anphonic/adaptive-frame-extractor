@@ -5,15 +5,24 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <opencv2/imgproc.hpp>
 
+extern "C" {
+#include <libavformat/avformat.h>
+}
+
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -412,6 +421,121 @@ TEST_CASE("16-bit rendering follows display rotation and widens 8-bit frames") {
   cv::Mat expected;
   frame->fullBgr().convertTo(expected, CV_16U, 257.0);
   CHECK(cv::norm(deep, expected, cv::NORM_INF) == 0.0);
+}
+
+namespace {
+
+// FFmpeg takes UTF-8 paths on every platform, while path::string() uses the
+// native narrow encoding on Windows.
+std::string utf8String(const std::filesystem::path& path) {
+  const auto encoded = path.u8string();
+  return {reinterpret_cast<const char*>(encoded.data()), encoded.size()};
+}
+
+std::filesystem::path pathFromUtf8(const std::string& text) {
+  return std::filesystem::path{
+      std::u8string{reinterpret_cast<const char8_t*>(text.data()), text.size()}};
+}
+
+class TemporaryTextFile final {
+ public:
+  TemporaryTextFile(std::filesystem::path path, const std::string& contents)
+      : path_{std::move(path)} {
+    std::ofstream stream{path_, std::ios::binary};
+    stream << contents;
+  }
+  ~TemporaryTextFile() {
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+  }
+  TemporaryTextFile(const TemporaryTextFile&) = delete;
+  TemporaryTextFile& operator=(const TemporaryTextFile&) = delete;
+
+  [[nodiscard]] const std::filesystem::path& path() const noexcept { return path_; }
+
+ private:
+  std::filesystem::path path_;
+};
+
+struct OpenRecorder {
+  int (*open)(AVFormatContext*, AVIOContext**, const char*, int, AVDictionary**){nullptr};
+  std::vector<std::string> urls{};
+};
+
+int recordOpen(
+    AVFormatContext* context,
+    AVIOContext** io,
+    const char* url,
+    int flags,
+    AVDictionary** options) {
+  auto* recorder = static_cast<OpenRecorder*>(context->opaque);
+  recorder->urls.emplace_back(url != nullptr ? url : "");
+  return recorder->open(context, io, url, flags, options);
+}
+
+}  // namespace
+
+TEST_CASE("decoder opens only plain local files") {
+  const MaterializedFixture fixture{"cfr_h264.mp4"};
+  const std::string prefixed = "concat:" + utf8String(fixture.path());
+
+  // Control: this FFmpeg build can open the file through the concat protocol
+  // when nothing restricts it, so a refusal below comes from the whitelist.
+  AVFormatContext* unrestricted = nullptr;
+  REQUIRE(avformat_open_input(&unrestricted, prefixed.c_str(), nullptr, nullptr) == 0);
+  avformat_close_input(&unrestricted);
+
+  CHECK_THROWS_AS(
+      (fe::VideoDecoder{pathFromUtf8(prefixed)}), std::runtime_error);
+
+  fe::VideoDecoder decoder{fixture.path()};
+  CHECK(decoder.read().has_value());
+}
+
+TEST_CASE("decoder refuses playlists that pull in other local files") {
+  const MaterializedFixture fixture{"cfr_h264.mp4"};
+  const std::string segment_name = utf8String(fixture.path().filename());
+  const TemporaryTextFile playlist{
+      pathFromUtf8(utf8String(fixture.path()) + ".m3u8"),
+      "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n"
+      "#EXTINF:1.0,\n" + segment_name + "\n#EXT-X-ENDLIST\n"};
+  const std::string playlist_url = utf8String(playlist.path());
+
+  // Control: with nothing in the way, FFmpeg's HLS demuxer asks to open a
+  // file other than the playlist it was given.
+  OpenRecorder recorder;
+  AVFormatContext* unrestricted = avformat_alloc_context();
+  REQUIRE(unrestricted != nullptr);
+  recorder.open = unrestricted->io_open;
+  unrestricted->opaque = &recorder;
+  unrestricted->io_open = recordOpen;
+  if (avformat_open_input(&unrestricted, playlist_url.c_str(), nullptr, nullptr) == 0) {
+    avformat_close_input(&unrestricted);
+  }
+  REQUIRE(std::any_of(
+      recorder.urls.begin(), recorder.urls.end(),
+      [&](const std::string& url) { return url != playlist_url; }));
+
+  CHECK_THROWS_WITH(
+      (fe::VideoDecoder{playlist.path()}),
+      Catch::Matchers::ContainsSubstring("refers to another file"));
+}
+
+TEST_CASE("decoder refuses concat scripts") {
+  const MaterializedFixture fixture{"cfr_h264.mp4"};
+  const TemporaryTextFile script{
+      pathFromUtf8(utf8String(fixture.path()) + ".ffconcat"),
+      "ffconcat version 1.0\nfile '" + utf8String(fixture.path().filename()) + "'\n"};
+  const std::string script_url = utf8String(script.path());
+
+  // Control: unrestricted, the concat demuxer opens the listed file.
+  AVFormatContext* unrestricted = nullptr;
+  REQUIRE(avformat_open_input(&unrestricted, script_url.c_str(), nullptr, nullptr) == 0);
+  avformat_close_input(&unrestricted);
+
+  CHECK_THROWS_WITH(
+      (fe::VideoDecoder{script.path()}),
+      Catch::Matchers::ContainsSubstring("refers to another file"));
 }
 
 TEST_CASE("decoder can defer color conversion without adaptive analysis") {
