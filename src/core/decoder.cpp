@@ -31,6 +31,7 @@ extern "C" {
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 
@@ -416,6 +417,36 @@ void checkAv(int code, const std::string& operation) {
   }
 }
 
+// State for openOnlyPrimaryInput(). FFmpeg hands the format context's opaque
+// pointer to every io_open call, including calls made for nested contexts.
+struct InputOpenGuard {
+  std::string allowed_url{};
+  int (*open)(AVFormatContext*, AVIOContext**, const char*, int, AVDictionary**){nullptr};
+  std::string refused_url{};
+};
+
+// The protocol whitelist stops network and chained protocols, but demuxers
+// such as HLS, DASH, image sequences, and QuickTime reference movies can still
+// ask for other local files. Only the path the caller gave may be opened.
+int openOnlyPrimaryInput(
+    AVFormatContext* context,
+    AVIOContext** io,
+    const char* url,
+    int flags,
+    AVDictionary** options) {
+  auto* guard = static_cast<InputOpenGuard*>(context->opaque);
+  if (guard == nullptr || guard->open == nullptr || url == nullptr) {
+    return AVERROR(EACCES);
+  }
+  if (guard->allowed_url != url) {
+    if (guard->refused_url.empty()) {
+      guard->refused_url = url;
+    }
+    return AVERROR(EACCES);
+  }
+  return guard->open(context, io, url, flags, options);
+}
+
 AVPixelFormat selectHardwarePixelFormat(
     AVCodecContext* context,
     const AVPixelFormat* formats) {
@@ -475,21 +506,41 @@ class VideoDecoder::Impl {
             options.defer_full_bgr
             || options.target_analysis_area_px.has_value()} {
     const auto encoded_path = utf8Path(path);
-    AVFormatContext* opened_format = nullptr;
     // This decoder only ever reads one local file. Without a whitelist, a
     // crafted input such as an HLS playlist, or a protocol prefix in place of
-    // a path, can make FFmpeg open network URLs or other files.
+    // a path, can make FFmpeg open network URLs. The io_open guard then stops
+    // demuxers from opening any local file other than the one requested.
     AVDictionary* open_options = nullptr;
     checkAv(
         av_dict_set(&open_options, "protocol_whitelist", "file", 0),
         "Cannot restrict video input protocols");
+    AVFormatContext* opened_format = avformat_alloc_context();
+    if (opened_format == nullptr) {
+      av_dict_free(&open_options);
+      throw std::bad_alloc{};
+    }
+    input_guard_.allowed_url = encoded_path;
+    input_guard_.open = opened_format->io_open;
+    opened_format->opaque = &input_guard_;
+    opened_format->io_open = openOnlyPrimaryInput;
+    // On failure avformat_open_input frees the context and clears the pointer.
     const int open_result = avformat_open_input(
         &opened_format, encoded_path.c_str(), nullptr, &open_options);
     av_dict_free(&open_options);
-    checkAv(open_result, "Cannot open video " + encoded_path);
     format_ = opened_format;
     try {
+      rejectSecondaryInput();
+      checkAv(open_result, "Cannot open video " + encoded_path);
+      // The concat demuxer opens the files its script lists through contexts
+      // of its own, which the io_open guard never sees.
+      if (format_->iformat != nullptr && format_->iformat->name != nullptr
+          && std::string_view{format_->iformat->name} == "concat") {
+        throw std::runtime_error(
+            "Video input refers to another file, which is not allowed: "
+            + encoded_path + " is a concat script");
+      }
       checkAv(avformat_find_stream_info(format_, nullptr), "Cannot read stream information");
+      rejectSecondaryInput();
       const int stream_index = av_find_best_stream(
           format_, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
       checkAv(stream_index, "Cannot find a video stream");
@@ -565,6 +616,14 @@ class VideoDecoder::Impl {
   }
 
   ~Impl() { cleanup(); }
+
+  void rejectSecondaryInput() const {
+    if (!input_guard_.refused_url.empty()) {
+      throw std::runtime_error(
+          "Video input refers to another file, which is not allowed: "
+          + input_guard_.refused_url);
+    }
+  }
 
   const VideoInfo& info() const { return info_; }
 
@@ -1028,6 +1087,8 @@ class VideoDecoder::Impl {
     avformat_close_input(&format_);
   }
 
+  // format_->opaque points here, so it must live as long as format_.
+  InputOpenGuard input_guard_{};
   AVFormatContext* format_{nullptr};
   AVCodecContext* codec_{nullptr};
   AVPacket* packet_{nullptr};
