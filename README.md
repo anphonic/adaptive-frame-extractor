@@ -3,6 +3,21 @@
 **Adaptive video frame extraction for Structure from Motion, Gaussian Splatting,
 photogrammetry, and related 3D reconstruction workflows.**
 
+> **This is a maintained fork of
+> [morishuz/adaptive-frame-extractor](https://github.com/morishuz/adaptive-frame-extractor).**
+> The original has had no commits since 30 October 2026, and its open issues and
+> pull requests have not had a response. This fork carries those fixes and
+> features, and I intend to keep it maintained for now. The fixes and features
+> are also offered back to the original as pull requests; if the original
+> becomes active again, it remains the project's home.
+>
+> What the fork adds: 8-bit and 16-bit TIFF output, 16-bit PNG output,
+> hardware decoding on Windows and Linux, GPU downscaling of analysis frames,
+> sidebar scaling, updated dependencies, input hardening, and a fix for a
+> memory overrun at some video widths
+> ([morishuz/adaptive-frame-extractor#10](https://github.com/morishuz/adaptive-frame-extractor/issues/10)).
+> Builds are on this fork's [Releases page](https://github.com/anphonic/adaptive-frame-extractor/releases).
+
 Frame Extractor turns video into image sequences for reconstruction pipelines
 such as COLMAP and Gaussian Splatting.
 
@@ -56,6 +71,12 @@ Frame Extractor is written in **C++20** and is designed to be fast and easy to
 use without requiring Python or command-line setup.
 
 ## Download
+
+**This fork:** pre-release builds for Windows x64, Linux x64 (DEB and tar.gz) and
+macOS Apple Silicon are on the [Releases page](https://github.com/anphonic/adaptive-frame-extractor/releases).
+The macOS build is ad-hoc signed, not notarized, and Windows builds are unsigned.
+
+**The original project's builds** do not include this fork's changes:
 
 **macOS — Apple Silicon, macOS 14 or newer:**
 
